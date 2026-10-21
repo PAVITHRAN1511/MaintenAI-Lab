@@ -24,7 +24,7 @@ ALGORITHMS = {
 }
 
 METRICS = {
-    "classification": ("accuracy", "f1_macro", "precision_macro", "recall_macro", "roc_auc"),
+    "classification": ("accuracy", "f1_macro", "precision_macro", "recall_macro", "roc_auc", "f1_failure", "precision_failure", "recall_failure", "pr_auc"),
     "regression": ("r2", "rmse", "mae"),
     "clustering": ("silhouette", "calinski_harabasz", "clusters", "noise_points"),
     "pca": ("explained_variance_total", "components"),

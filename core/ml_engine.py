@@ -21,6 +21,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     calinski_harabasz_score,
     f1_score,
     mean_absolute_error,
@@ -212,10 +213,16 @@ def _classification_metrics(y_true: pd.Series, y_pred: np.ndarray, pipeline: Pip
         "recall_macro": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
     }
+    if y_true.nunique() == 2 and 1 in y_true.values:
+        metrics["precision_failure"] = float(precision_score(y_true, y_pred, pos_label=1, zero_division=0))
+        metrics["recall_failure"] = float(recall_score(y_true, y_pred, pos_label=1, zero_division=0))
+        metrics["f1_failure"] = float(f1_score(y_true, y_pred, pos_label=1, zero_division=0))
     if y_true.nunique() == 2 and hasattr(pipeline, "predict_proba"):
         try:
-            metrics["roc_auc"] = float(roc_auc_score(y_true, pipeline.predict_proba(X_test)[:, 1]))
-        except ValueError:
+            scores = pipeline.predict_proba(X_test)[:, 1]
+            metrics["roc_auc"] = float(roc_auc_score(y_true, scores))
+            metrics["pr_auc"] = float(average_precision_score(y_true, scores))
+        except (ValueError, AttributeError):
             pass
     return metrics
 
@@ -254,7 +261,13 @@ def _validation_score(pipeline: Pipeline, X: pd.DataFrame, y: pd.Series, config:
             X_train, y_train = _oversample(X_train, y_train, config.random_state + fold)
         fitted = clone(pipeline).fit(X_train, y_train)
         prediction = fitted.predict(X.iloc[validation_idx])
-        score = accuracy_score(y.iloc[validation_idx], prediction) if config.task_type == "classification" else r2_score(y.iloc[validation_idx], prediction)
+        if config.task_type == "classification":
+            if 1 in y.values:
+                score = f1_score(y.iloc[validation_idx], prediction, pos_label=1, zero_division=0)
+            else:
+                score = f1_score(y.iloc[validation_idx], prediction, average="macro", zero_division=0)
+        else:
+            score = r2_score(y.iloc[validation_idx], prediction)
         scores.append(float(score))
     return scores
 

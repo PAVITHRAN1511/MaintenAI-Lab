@@ -129,6 +129,9 @@ class _RenderedPages:
     def info(self, message: str, **_: object) -> None:
         self.infos.append(message)
 
+    def slider(self, *_: object, **__: object) -> float:
+        return 0.50
+
 
 def test_results_and_explainability_render_a_real_session_result(monkeypatch: pytest.MonkeyPatch) -> None:
     frame = supervised_frame()

@@ -1,0 +1,4 @@
+Operating_Point,Threshold,Test_Accuracy,Test_Failure_Precision,Test_Failure_Recall,Test_Failure_F1,True_Negatives,False_Positives,False_Negatives,True_Positives
+Default Threshold (0.50),0.5,0.993,0.9655,0.8235,0.8889,1930,2,12,56
+Tuned Optimal F1 Threshold,0.48,0.993,0.9655,0.8235,0.8889,1930,2,12,56
+High-Recall Target (>=0.90),0.07,0.9595,0.4511,0.8824,0.597,1859,73,8,60

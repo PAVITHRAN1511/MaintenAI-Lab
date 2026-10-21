@@ -17,19 +17,62 @@ def experiment_summary(result: ExperimentResult) -> pd.DataFrame:
     return pd.DataFrame({"Setting": ["Task", "Algorithm", "Target", "Features", "Validation", "Runtime (seconds)"], "Value": [config.task_type, config.algorithm, config.target or "—", ", ".join(result.feature_columns), config.validation.replace("_", " "), f"{result.runtime_seconds:.3f}" if result.runtime_seconds is not None else "Unavailable"]})
 
 
-def classification_figures(result: ExperimentResult) -> dict[str, go.Figure]:
-    if result.truth is None or result.predictions is None:
+def classification_figures(
+    result: ExperimentResult,
+    predictions: np.ndarray | None = None,
+    baseline_accuracy: float = 0.9661,
+) -> dict[str, go.Figure]:
+    if result.truth is None:
         return {}
-    labels = np.unique(np.concatenate([result.truth, result.predictions]))
-    matrix = confusion_matrix(result.truth, result.predictions, labels=labels)
+    preds = predictions if predictions is not None else result.predictions
+    if preds is None:
+        return {}
+    labels = np.unique(np.concatenate([result.truth, preds]))
+    matrix = confusion_matrix(result.truth, preds, labels=labels)
     figures: dict[str, go.Figure] = {
-        "confusion_matrix": px.imshow(matrix, x=[str(item) for item in labels], y=[str(item) for item in labels], text_auto=True, labels={"x": "Predicted", "y": "Actual", "color": "Count"}, title="Confusion matrix")
+        "confusion_matrix": px.imshow(
+            matrix,
+            x=[str(item) for item in labels],
+            y=[str(item) for item in labels],
+            text_auto=True,
+            labels={"x": "Predicted", "y": "Actual", "color": "Count"},
+            title="Confusion matrix",
+        )
     }
-    if result.prediction_scores is not None and len(labels) == 2:
-        fpr, tpr, _ = roc_curve(result.truth, result.prediction_scores, pos_label=labels[1])
-        precision, recall, _ = precision_recall_curve(result.truth, result.prediction_scores, pos_label=labels[1])
-        figures["roc"] = px.line(x=fpr, y=tpr, labels={"x": "False positive rate", "y": "True positive rate"}, title="ROC curve")
-        figures["precision_recall"] = px.line(x=recall, y=precision, labels={"x": "Recall", "y": "Precision"}, title="Precision–recall curve")
+    if result.prediction_scores is not None and len(np.unique(result.truth)) == 2:
+        pos_label = 1 if 1 in result.truth else labels[-1]
+        fpr, tpr, _ = roc_curve(result.truth, result.prediction_scores, pos_label=pos_label)
+        precision, recall, _ = precision_recall_curve(result.truth, result.prediction_scores, pos_label=pos_label)
+        roc_fig = px.line(x=fpr, y=tpr, labels={"x": "False positive rate", "y": "True positive rate"}, title="ROC curve")
+        roc_fig.add_shape(type="line", x0=0, y0=0, x1=1, y1=1, line={"dash": "dash", "color": "gray"})
+        figures["roc"] = roc_fig
+
+        pr_fig = px.line(x=recall, y=precision, labels={"x": "Recall", "y": "Precision"}, title="Precision–recall curve")
+        figures["precision_recall"] = pr_fig
+
+    # Evaluation metrics chart with trivial baseline reference line
+    metric_keys = [
+        "accuracy", "f1_macro", "f1_failure", "precision_failure", "recall_failure", "roc_auc", "pr_auc"
+    ]
+    available_metrics = {k: result.metrics[k] for k in metric_keys if k in result.metrics}
+    if available_metrics:
+        names = [k.replace("_", " ").title() for k in available_metrics]
+        vals = list(available_metrics.values())
+        chart = go.Figure()
+        chart.add_bar(x=names, y=vals, text=[f"{v:.4f}" for v in vals], textposition="auto", name="Model Metric")
+        chart.add_hline(
+            y=baseline_accuracy,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Trivial Baseline ({baseline_accuracy:.4f})",
+            annotation_position="top right",
+        )
+        chart.update_layout(
+            title="Evaluation Metrics with Baseline Reference Line",
+            yaxis={"range": [0, 1.05], "title": "Score"},
+        )
+        figures["metrics_chart"] = chart
+
     return figures
 
 

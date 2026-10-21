@@ -1,0 +1,2 @@
+Model,Accuracy,Failure_Precision,Failure_Recall,Failure_F1,Note
+Trivial Majority Classifier (Always 0),0.9661,0.0,0.0,0.0,Predicted constant non-failure on 10000 rows.

@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from hashlib import sha256
 from pathlib import Path
+import numpy as np
 import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import streamlit as st
 
 from core.data_loader import load_csv, validate_ai4i_schema
+from core.features import add_engineered_features
 from core.eda import (
     correlation_figure,
     distribution_feature_columns,
@@ -134,6 +137,9 @@ def _load_dataset_controls() -> None:
             else:
                 _store_dataset(path.strip(), path.strip())
 
+    st.sidebar.subheader("Feature Engineering")
+    st.sidebar.checkbox("Use engineered features", key="use_engineered_features")
+
 
 def _store_dataset(source: object, name: str) -> None:
     result = load_csv(source)
@@ -251,20 +257,53 @@ def _algorithm_parameters(task_type: str, algorithm: str) -> dict[str, object]:
     return {}
 
 
-def _render_experiment_result(result: ExperimentResult, selected_metric: str | None = None) -> None:
+def _calculate_live_metrics(result: ExperimentResult, preds: np.ndarray | None) -> dict[str, float]:
+    metrics = dict(result.metrics)
+    if result.truth is not None and preds is not None:
+        metrics["accuracy"] = float(accuracy_score(result.truth, preds))
+        metrics["precision_macro"] = float(precision_score(result.truth, preds, average="macro", zero_division=0))
+        metrics["recall_macro"] = float(recall_score(result.truth, preds, average="macro", zero_division=0))
+        metrics["f1_macro"] = float(f1_score(result.truth, preds, average="macro", zero_division=0))
+        if 1 in result.truth:
+            metrics["precision_failure"] = float(precision_score(result.truth, preds, pos_label=1, zero_division=0))
+            metrics["recall_failure"] = float(recall_score(result.truth, preds, pos_label=1, zero_division=0))
+            metrics["f1_failure"] = float(f1_score(result.truth, preds, pos_label=1, zero_division=0))
+    return metrics
+
+
+def _render_experiment_result(result: ExperimentResult, selected_metric: str | None = None, predictions: np.ndarray | None = None) -> None:
     """Render only data calculated by a completed engine run."""
-    if selected_metric and selected_metric in result.metrics:
-        st.metric(f"Selected metric: {selected_metric}", f"{result.metrics[selected_metric]:.4f}")
+    display_preds = predictions if predictions is not None else result.predictions
+    display_metrics = _calculate_live_metrics(result, display_preds) if (result.config.task_type == "classification" and display_preds is not None) else result.metrics
+
+    if selected_metric and selected_metric in display_metrics:
+        st.metric(f"Selected metric: {selected_metric}", f"{display_metrics[selected_metric]:.4f}")
     elif selected_metric:
         st.warning(f"{selected_metric.replace('_', ' ').title()} is undefined for this completed run.")
-    metrics = pd.DataFrame({"Metric": list(result.metrics), "Value": list(result.metrics.values())})
+
+    if result.config.task_type == "classification":
+        cols = st.columns(4)
+        if "f1_failure" in display_metrics:
+            cols[0].metric("Failure F1", f"{display_metrics['f1_failure']:.4f}")
+        if "precision_failure" in display_metrics:
+            cols[1].metric("Failure Precision", f"{display_metrics['precision_failure']:.4f}")
+        if "recall_failure" in display_metrics:
+            cols[2].metric("Failure Recall", f"{display_metrics['recall_failure']:.4f}")
+        if "pr_auc" in display_metrics:
+            cols[3].metric("PR-AUC", f"{display_metrics['pr_auc']:.4f}")
+
+    metrics = pd.DataFrame({"Metric": list(display_metrics), "Value": list(display_metrics.values())})
     st.dataframe(metrics, hide_index=True, use_container_width=True)
     if result.validation_scores:
         st.caption("Validation scores (each fitted on a training fold)")
         st.dataframe(pd.DataFrame({"Fold": range(1, len(result.validation_scores) + 1), "Score": result.validation_scores}), hide_index=True)
-    if result.predictions is not None and result.truth is not None:
+    if display_preds is not None and result.truth is not None:
         st.subheader("Held-out predictions")
-        st.dataframe(pd.DataFrame({"Actual": result.truth, "Predicted": result.predictions}), hide_index=True, use_container_width=True)
+        pred_dict = {"Actual": result.truth}
+        if result.prediction_scores is not None:
+            pred_dict["Probability"] = np.round(result.prediction_scores, 4)
+        pred_dict["Predicted"] = display_preds
+        st.dataframe(pd.DataFrame(pred_dict), hide_index=True, use_container_width=True)
     if result.labels is not None:
         st.subheader("Cluster assignments")
         st.dataframe(pd.Series(result.labels, name="Cluster").value_counts().rename_axis("Cluster").reset_index(name="Count"), hide_index=True)
@@ -304,7 +343,7 @@ def model_lab_page(df: pd.DataFrame | None) -> None:
             del st.session_state[key]
         st.rerun()
 
-    task_type = st.selectbox("Experiment type", ["classification", "regression", "clustering", "pca"], format_func=str.title, key="model_lab_task")
+    task_type = st.selectbox("Experiment type", ["classification", "clustering", "pca"], format_func=str.title, key="model_lab_task")
     algorithm = st.selectbox("Algorithm", algorithms_for(task_type), format_func=lambda value: value.replace("_", " ").title(), key="model_lab_algorithm")
     supervised = task_type in {"classification", "regression"}
     target: str | None = None
@@ -317,7 +356,8 @@ def model_lab_page(df: pd.DataFrame | None) -> None:
         target = st.selectbox("Target variable", targets, index=targets.index(default_target), key=f"model_lab_target_{task_type}")
 
     defaults = default_features_for(df, target)
-    feature_key = f"model_lab_features_{task_type}_{target or 'unsupervised'}"
+    is_eng = bool(st.session_state.get("use_engineered_features", False))
+    feature_key = f"model_lab_features_{task_type}_{target or 'unsupervised'}_{is_eng}"
     features = st.multiselect("Input features", list(df.columns), default=defaults, key=feature_key)
     if target == "Machine failure":
         st.caption("Machine failure safeguards: UDI, Product ID, and failure subtype labels cannot be used as predictors.")
@@ -409,11 +449,27 @@ def results_page(df: pd.DataFrame | None) -> None:
         st.info("Run an experiment in Model Lab to see its real outputs here.")
         return
     st.caption(f"Latest run: {result.config.task_type.title()} · {result.config.algorithm.replace('_', ' ').title()}")
-    _render_experiment_result(result, st.session_state.latest_metric)
+
+    preds = result.predictions
+    if result.config.task_type == "classification":
+        st.info("Accuracy can be misleading because the positive failure class represents only about 3.4% of observations.")
+        if result.prediction_scores is not None and hasattr(st, "slider"):
+            threshold = st.slider(
+                "Decision threshold",
+                min_value=0.05,
+                max_value=0.95,
+                value=0.50,
+                step=0.01,
+                key=f"results_threshold_slider_{result.config.algorithm}",
+                help="Adjust classification decision threshold for probability-supported models.",
+            )
+            preds = (result.prediction_scores >= threshold).astype(int)
+
+    _render_experiment_result(result, st.session_state.latest_metric, predictions=preds)
     st.subheader("Experiment configuration")
     st.dataframe(experiment_summary(result), hide_index=True, use_container_width=True)
     if result.config.task_type == "classification":
-        for figure in classification_figures(result).values():
+        for figure in classification_figures(result, predictions=preds).values():
             st.plotly_chart(figure, use_container_width=True)
         st.caption("Precision, recall, F1, ROC and precision–recall curves describe this held-out split only; rare classes can make them unstable.")
     elif result.config.task_type == "regression":
@@ -562,19 +618,23 @@ def main() -> None:
         ["Overview", "EDA", "Model Lab", "Results", "Explainability", "Clustering & PCA", "Experiment History"],
     )
     df = st.session_state.dataset
+    if df is not None and st.session_state.get("use_engineered_features", False):
+        modeling_df = add_engineered_features(df)
+    else:
+        modeling_df = df
 
     if page == "Overview":
         overview_page(df)
     elif page == "EDA":
         eda_page(df)
     elif page == "Model Lab":
-        model_lab_page(df)
+        model_lab_page(modeling_df)
     elif page == "Results":
-        results_page(df)
+        results_page(modeling_df)
     elif page == "Explainability":
-        explainability_page(df)
+        explainability_page(modeling_df)
     elif page == "Clustering & PCA":
-        clustering_pca_page(df)
+        clustering_pca_page(modeling_df)
     elif page == "Experiment History":
         experiment_history_page(df)
 

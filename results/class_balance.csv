@@ -1,0 +1,9 @@
+Category,Count,Percentage
+Machine failure (Total),339,3.39
+No failure (Total),9661,96.61
+Failure Mode: TWF,46,0.45999999999999996
+Failure Mode: HDF,115,1.15
+Failure Mode: PWF,95,0.95
+Failure Mode: OSF,98,0.98
+Failure Mode: RNF,19,0.19
+Failures with No Mode Flag,9,0.09
